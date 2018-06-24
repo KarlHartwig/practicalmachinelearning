@@ -1,0 +1,355 @@
+---
+title: "Predicting Activity Types Based on Activity Tracker Data"
+author: "Karl Hartwig"
+date: "22 juni 2018"
+output: html_document
+tables: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(fig.pos = "H")
+```
+
+## Introduction
+Today activity monitoring devices such as  Jawbone Up, Nike FuelBand, and Fitbit are becomming more and more popular. 
+This work seeks to build a predictive model to identify how well a person is performing dumbbell lifts based on provided accelerometer data collected by such devices.
+
+When comparing the results of five different forecasting methods this work found that Random Forest (RF) had the best performance. 
+
+## Description of the dataset
+The devices were placed on the belt, forearm, arm, and barbell of 6 participants performing dumbbell biceps curls in five different ways: 
+
++ Class A, exactly according to the specification, 
++ Class B, throwing the elbows to the front, 
++ Class C, lifting the dumbbell only halfway, 
++ Class D, lowering the dumbbell only halfway, 
++ Class E, throwing the hips to the front (Class E).
+
+\br
+
+More information about the utilised Weight Lifting Exercises Dataset and background data can be found at:
+http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har
+
+The original research based on the data can be studied in the following paper:
+
+\br
+
+*Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.*
+
+## Set up R environment 
+```{r setEnvironmentDummy,warning=FALSE,error=FALSE,eval=FALSE}
+# load required packages
+library(caret)
+library(dplyr)
+library(gbm)
+library(rpart)
+library(randomForest)
+library(RANN)
+library(rattle)
+library(corrplot)
+library(knitr)
+library(parallel)
+library(doParallel)
+
+# set up parallel clusters for faster processing (leave 1 core for OS)
+cluster <- makeCluster(detectCores() - 1)
+registerDoParallel(cluster)
+```
+
+```{r setEnvironment,warning=FALSE,error=FALSE,include=FALSE}
+# load required packages
+library(caret)
+library(dplyr)
+library(gbm)
+library(rpart)
+library(randomForest)
+library(RANN)
+library(rattle)
+library(corrplot)
+library(knitr)
+library(parallel)
+library(doParallel)
+
+# set up parallel clusters for faster processing (leave 1 core for OS)
+cluster <- makeCluster(detectCores() - 1)
+registerDoParallel(cluster)
+```
+
+## Data Cleaning
+
+The test and training dataset were downloaded. and the training set split into a train and validation dataset. The two latter contained 70% and 30% of the downloaded training set in order to enable estimation of out of sample error later in the analyses.
+
+```{r dataDownload,warning=FALSE,error=FALSE}
+# Set up dataset URLs
+trainUrl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+testUrl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+# Download Data
+trainIn <- read.csv(trainUrl, na.strings=c("NA","#DIV/0!",""))
+testIn <- read.csv(testUrl, na.strings=c("NA","#DIV/0!",""))
+
+# create cross validation sets i.e. pratition trainingset into two for 
+# validation of fitted models without using test set
+idTrain<-createDataPartition(y=trainIn$classe,p=0.70,list=FALSE)
+trainSub<-trainIn[idTrain,]
+validation<-trainIn[-idTrain,]
+
+```
+
+Near zero variance variables were removed together with data associated with subject ID and time stamps. All columns containing more than 90% missing values where removed. This was done because the assosiated variables were deemed to have too many missing values in ofrder for imputation to work in a meaningful way. After removing these columns it turned out that all other columns did not contain any missing values and imputation was hence not required. 
+Finally, the data was normalised by subtracting the mean and dividing by the variance of each variable.  
+
+```{r cleanData,warning=FALSE,error=FALSE}
+# Remove NearZeroVariance variables
+Nzv<-nearZeroVar(trainSub, saveMetrics=TRUE)
+NzvIdx<-colnames(trainSub) %in% rownames(Nzv[Nzv$nzv|Nzv$zeroVar,])
+TrainUse<-trainSub[,!NzvIdx]
+ValidationUse<-validation[,!NzvIdx]
+
+# Remove columns associated with subject id and name and time
+TrainUse<-TrainUse[,-c(1:6)]
+ValidationUse<-ValidationUse[,-c(1:6)]
+
+# find percentage of missing values in each column
+nNa<-sapply(1:ncol(TrainUse),function(i)sum(is.na(TrainUse[,i]))/nrow(TrainUse))
+
+# remove columns that has more than 90% missing values
+removeCol<-nNa>0.9
+TrainUse<-TrainUse[,!removeCol]
+
+# cleaning data:
+# -standardising variables, (value-mean)/std
+preObj<-preProcess(TrainUse,method=c("center","scale"))
+
+# apply preprocessing
+TrainClean<-predict(preObj,TrainUse)
+
+# apply scaling from preprocessing to validation set
+ValidationClean<-predict(preObj,ValidationUse)
+```
+
+
+## Exploratory Analysis
+Before building predictive models the correlation between predictive variables were explored through a correlation matrix plot.
+
+```{r exploratoryAnalysis,warning=FALSE,error=FALSE}
+# remove classe from dataset
+corMatrix <- cor(TrainClean %>% select(-classe))
+corrplot(corMatrix, type = "lower",tl.cex = 0.5)
+```
+
+As can be seen in the plot above, relatively few variables are highly correlated. Hence it is not deemed that Principal Components Analysis is required to reduce the dimensions of the dataset. 
+
+\br
+
+
+## Creating Predictive Models
+
+In order to find what model are best suitable for predicting the activity classes the following methods where evaluted.
+
++ Classification Tree via Recurrsive Partitioning (PT),
++ Linear Decriminate Analysis  (LDA),
++ Generalized Boosted Regression (GBM), 
++ Bagging (BAG),
++ Random Forest (RF).
+
+
+\br
+
+As can be seen in Table 1 in Appendix A5 below, the RF method outperformed all other investigated methods. Due to this the RF model is applied to the supplied test set in later sections of this document and will be the focus of the rest of this work.
+The detailed results of the other models can be found in Appendix A.
+
+\br
+
+
+
+## Evaluation of the Chosen Random Forest Model
+The chosen RF model was trained through a five-fold cross validation applied to the pre-processed dataset. Parallel processing was enabled in order to speed up training.
+
+
+```{r setTrainControl,warning=FALSE,error=FALSE}
+#set seed 
+set.seed(3211)
+
+#apply 5 fold cross validation
+control <- trainControl(method="cv", number = 5,
+                           allowParallel = TRUE)
+```
+
+### Evaluating In-Sample Error
+
+As can be seen in the print out below the mean in-sample training error for the random forest is just above one percent. 
+
+```{r fitRF,warning=FALSE,error=FALSE,cache=TRUE}
+# Fit classification Tree through Bagging
+modRF<-train(classe ~ .,method="rf",data=TrainClean,preProcess=c("scale","center" ),prox=TRUE, trControl=control)
+
+# Show model summary
+modRF
+```
+
+The in sample errors increase slightly with the number of applied predictors as seen in the figur below. Yet it remains remains fairly stable.
+
+```{r fitRFplot,warning=FALSE,error=FALSE}
+plot(modRF)
+
+```
+
+As expeted the error rate drops rapidly as the number of trees in the random forest increase. This is however mostly noticable as the number of trees grows from one to about 40. After this the rate stays fairly constant and is only marginally improved as the number of trees goes from 100 to 500. 
+
+```{r fitRFplot2,warning=FALSE,error=FALSE}
+plot(modRF$finalModel)
+```
+
+### Evaluating Out of Sample Error
+
+```{r RFpred,warning=FALSE,error=FALSE}
+# apply predictive model
+predRF<-predict(modRF,ValidationClean)
+
+# look at error matrix
+RFMat<-confusionMatrix(ValidationClean$classe, predRF)
+RFMat
+
+# calculate out of sample accuracy
+OutSampleAccRF<-RFMat$overall["Accuracy"]
+
+# Calculate In Sample Accuracy
+InSampleAccRF<-mean(modRF$results["Accuracy"]["Accuracy"][,1])
+
+```
+
+
+The RF model was applied to the validation set to check the out of sample error. The out of sample error is `r round(1- OutSampleAccRF,3)*100`% while the in-sample error is larger with a value of `r round(1- InSampleAccRF,3)*100`%. This indicates that the model is robust to varying input and that the degree of overfitting is small. Intrestingly all investigated models experienced an increase in accuracy between the test and validation set except for the LDA model. 
+
+
+Of the evaluated cases the model has the hardest time destinguishing between classes C and D. This is not suprising as the two activities are very similar (lifting andlowering dumbbell only halfway). Similarily, the movement that was nearly always classified correctly was excessive hip movement which makes sense as this movement differs most from the others. The results also indicate that the type of incorrect movement the subject is most likely to get away with without being detected by the algorithim is class B, incorrect elbow movement. 
+
+## Application of Final Model on Test Set
+
+Finally, the model was applied to the test set to predict the type of activities performed as displayed below. 
+
+
+```{r TestSet,warning=FALSE,error=FALSE}
+# apply scaling to test set
+Test<-predict(preObj,testIn)
+
+# apply predictive model
+predRFTest<-predict(modRF,Test)
+
+outcome<-paste(predRFTest,collapse=", ")
+
+```
+
+The predicted classifications of the provided test set are `r outcome`.
+
+## Conclusion
+
+In this work five different predictive algorithms were applied to a dataset containing correct and incorrect movements of people conducting dumbbell biceps curls. Of the investigated algorithms Random Forest performed best. This is attributed to the way random forests randomly drops predicitive variable during training in different trees. This makes the forest as a whole less dependant on one single, or a few, predictive variables which in turn makes the algorithm robust to correlated covariates and outliers in general. 
+
+## Appendix A: other tested models
+
+### A1: Classification Tree via Recurrsive Partitioning
+
+```{r fitClassTree,warning=FALSE,error=FALSE,cache=TRUE}
+# Fit classification Tree
+modTree<-train(classe ~ .,method="rpart",data=TrainClean,preProcess=c("scale","center" ), trControl=control)
+fancyRpartPlot(modTree$finalModel)
+
+# apply predictive model
+predTree<-predict(modTree,ValidationClean)
+
+# Check out of sample error
+TreeMat<-confusionMatrix(ValidationClean$classe, predTree)
+TreeMat
+
+```
+
+### A2: Bagging 
+
+```{r fitBagMod,warning=FALSE,error=FALSE,cache=TRUE}
+# Fit model
+modBag<-train(classe ~ .,method="treebag",data=TrainClean,preProcess=c("scale","center" ), trControl=control)
+modBag$finalModel
+
+# apply predictive model
+predBag<-predict(modBag,ValidationClean)
+
+# Check out of sample error
+bagMat<-confusionMatrix(ValidationClean$classe, predBag)
+bagMat
+```
+
+
+### A3: Generalized Boosted Regression 
+
+```{r fitGBM,warning=FALSE,error=FALSE,warning=FALSE,error=FALSE,cache=TRUE}
+# Fit Generalised boosted regression
+modGbm<-train(classe ~ .,method="gbm",data=TrainClean,preProcess=c("scale","center" ),verbose=FALSE, trControl=control)
+
+# apply predictive model
+predGbm<-predict(modGbm,ValidationClean)
+
+# Check out of sample error
+GbmMat<-confusionMatrix(ValidationClean$classe, predGbm)
+GbmMat
+```
+
+
+### A4: Linear Decriminate Analysis 
+
+```{r fitLDA,warning=FALSE,error=FALSE,cache=TRUE}
+# Fit linear decriminate analysis model
+modLda<-train(classe ~ .,method="lda",data=TrainClean,preProcess=c("scale","center" ),varbose=FALSE, trControl=control)
+
+# apply predictive model
+PredLda<-predict(modLda,ValidationClean)
+
+# Check out of sample error
+LdaMat<-confusionMatrix(ValidationClean$classe, PredLda)
+LdaMat
+```
+
+
+### A5: Create Summary Table
+
+```{r summaryTable ,warning=FALSE,error=FALSE, echo=TRUE}
+
+# calculate out of sample accuracy
+OutSampleAccTree<-TreeMat$overall["Accuracy"]
+OutSampleAccLda<-LdaMat$overall["Accuracy"]
+OutSampleAccGbm<-GbmMat$overall["Accuracy"]
+OutSampleAccBag<-bagMat$overall["Accuracy"]
+
+# Calculate In Sample Accuracy
+InSampleAccTree<-mean(modTree$results["Accuracy"]["Accuracy"][,1])
+InSampleAccLda<-mean(modLda$results["Accuracy"]["Accuracy"][,1])
+InSampleAccGbm<-mean(modGbm$results["Accuracy"]["Accuracy"][,1])
+InSampleAccBag<-mean(modBag$results["Accuracy"]["Accuracy"][,1])
+
+# Create Table and round to 3 decimals
+Model<-c("PT","LDA","GBM", "BAG", "RF")
+Out.Of.Sample.Acc<-round(
+      c(OutSampleAccTree, OutSampleAccLda, OutSampleAccGbm, OutSampleAccBag, OutSampleAccRF), 
+      3)
+In.Sample.Acc<-round(
+      c(InSampleAccTree, InSampleAccLda, InSampleAccGbm, InSampleAccBag, InSampleAccRF), 
+      3)
+
+# Combine data to form summary table
+Summary<-data.frame(Model,In.Sample.Acc,Out.Of.Sample.Acc)
+Summary["Out.Of.Sample.Err"]<-1-Out.Of.Sample.Acc
+Summary["In.Sample.Err"]<-1-In.Sample.Acc
+Table1<-kable(Summary,  caption = "Table 1: Accuracy and Errors all Prediction Methods",booktabs = TRUE)
+
+Table1
+```
+
+
+
+```{r stopParallel ,warning=FALSE,error=FALSE}
+
+stopCluster(cluster)
+registerDoSEQ()
+```
