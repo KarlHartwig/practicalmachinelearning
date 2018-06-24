@@ -76,7 +76,9 @@ cluster <- makeCluster(detectCores() - 1)
 registerDoParallel(cluster)
 ```
 
-## Data Cleaning
+## Preparing Data
+
+### Download Data and Create Validation Set
 
 The test and training dataset were downloaded. and the training set split into a train and validation dataset. The two latter contained 70% and 30% of the downloaded training set in order to enable estimation of out of sample error later in the analyses.
 
@@ -97,7 +99,9 @@ validation<-trainIn[-idTrain,]
 
 ```
 
-Near zero variance variables were removed together with data associated with subject ID and time stamps. All columns containing more than 90% missing values where removed. This was done because the assosiated variables were deemed to have too many missing values in ofrder for imputation to work in a meaningful way. After removing these columns it turned out that all other columns did not contain any missing values and imputation was hence not required. 
+### Data Cleaning
+
+Near zero variance variables were removed together with data associated with subject ID and time stamps. All columns containing more than 90% missing values where removed. This was done because the assosiated variables were deemed to have too many missing values in order for imputation to work in a meaningful way. After removing these columns it turned out that all other columns did not contain any missing values and imputation was hence not required. 
 Finally, the data was normalised by subtracting the mean and dividing by the variance of each variable.  
 
 ```{r cleanData,warning=FALSE,error=FALSE}
@@ -221,10 +225,10 @@ InSampleAccRF<-mean(modRF$results["Accuracy"]["Accuracy"][,1])
 ```
 
 
-The RF model was applied to the validation set to check the out of sample error. The out of sample error is `r round(1- OutSampleAccRF,3)*100`% while the in-sample error is larger with a value of `r round(1- InSampleAccRF,3)*100`%. This indicates that the model is robust to varying input and that the degree of overfitting is small. Intrestingly all investigated models experienced an increase in accuracy between the test and validation set except for the LDA model. 
+The RF model was applied to the validation set to check the out of sample error. The mean out of sample error is `r round(1- OutSampleAccRF,3)*100`% while the in-sample error is larger with a value of `r round(1- InSampleAccRF,3)*100`%. This indicates that the model is robust to varying input and that the degree of overfitting is small. Intrestingly all investigated models experienced an increase in accuracy between the test and validation set except for the LDA model. 
 
 
-Of the evaluated cases the model has the hardest time destinguishing between classes C and D. This is not suprising as the two activities are very similar (lifting andlowering dumbbell only halfway). Similarily, the movement that was nearly always classified correctly was excessive hip movement which makes sense as this movement differs most from the others. The results also indicate that the type of incorrect movement the subject is most likely to get away with without being detected by the algorithim is class B, incorrect elbow movement. 
+Of the evaluated cases the RF model had the hardest time destinguishing between classes C and D. This is not suprising as the two activities are very similar (lifting and lowering dumbbell only halfway). Similarily, the movement that was nearly always classified correctly was excessive hip movement which makes sense as this movement differs most from the others. The results also indicate that the type of incorrect movement the subject is most likely to get away with without being detected by the algorithim is class B, incorrect elbow movement. 
 
 ## Application of Final Model on Test Set
 
